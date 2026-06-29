@@ -14,7 +14,7 @@ Servo myServo;
 // ==================================================
 // Wi-Fi設定
 // ==================================================
-const char* password = "12345678";
+const char* password = "00000000";
 String ssidName;
 WebServer server(80);
 
