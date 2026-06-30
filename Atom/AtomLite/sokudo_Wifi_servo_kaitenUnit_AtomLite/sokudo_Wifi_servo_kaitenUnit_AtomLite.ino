@@ -14,7 +14,7 @@ Servo myServo;
 // ==================================================
 // Wi-Fi設定
 // ==================================================
-const char* password = "00000000";
+const char* password = "12345678";
 String ssidName;
 WebServer server(80);
 
@@ -63,7 +63,13 @@ bool isReturning = false;       // 復路（帰り道）の途中か
 // ==================================================
 int knobToAngle(int value) {
   int angle = map(value, 0, 4095, 0, 180);
-  return constrain(angle, 0, 180);
+  int constrainedAngle = constrain(angle, 0, 180);
+  
+  // つまみが最小（0度付近）のときでも、強制的に5度にして「ピクッ」と動かす
+  if (constrainedAngle < 5) {
+    return 5;
+  }
+  return constrainedAngle;
 }
 
 // ==================================================
@@ -174,8 +180,13 @@ void loop() {
 
   // 短押し判定
   if (!lastPressed && pressed) {
-    if (!speedMode) { moveServoOnce(); }
-    else if (digitalRead(BUTTON_PIN2) == LOW) { moveServoOnce(); }
+    if (!speedMode) { 
+      moveServoOnce();
+    }
+  // speedModeがtrueのときも、pressed（どちらかのボタンが押された状態）なら動かす
+    else if (pressed) { 
+      moveServoOnce();
+    }
   }
 
   if (webPressed || blePressed) {
