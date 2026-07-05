@@ -17,7 +17,7 @@ Preferences prefs;
 // ==================================================
 // Wi-Fi設定
 // ==================================================
-const char* password = "00000000";
+const char* password = "12345678";
 String ssidName;
 AsyncWebServer server(80);
 
