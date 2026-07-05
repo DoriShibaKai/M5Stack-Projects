@@ -214,7 +214,7 @@ int selectBestWiFiChannel() {
   int score11 = 0;
 
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
+  WiFi.disconnect(false);
   delay(100);
 
   int n = WiFi.scanNetworks();
