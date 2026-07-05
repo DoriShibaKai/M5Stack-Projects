@@ -60,6 +60,12 @@ volatile bool blePressed = false;
 
 bool lastPressed = false;
 bool waitButtonRelease = false;
+bool bootAtomButtonPressed = false;
+bool bootButton1Pressed = false;
+bool bootCommSwitchDone = false;
+unsigned long bootPressStart = 0;
+unsigned long atomHoldStart = 0;
+bool atomHoldSwitchDone = false;
 
 // GPIO39 50ms継続LOW判定用
 bool g39StablePressed = false;
@@ -71,6 +77,11 @@ unsigned long g39LowStart = 0;
 bool speedMode = false;
 int savedAngle = 90;
 int speedSetting = 200;
+
+// 回転角ユニットとWebスライダーの共存用
+int lastKnobValue = -1;
+const int KNOB_CHANGE_THRESHOLD = 25;
+unsigned long ignoreKnobUntil = 0;
 
 // ==================================================
 // ノンブロッキング制御
@@ -283,51 +294,126 @@ String makeRootHtml() {
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
 
   html += "<style>";
-  html += "body{font-family:sans-serif;text-align:center;margin-top:60px;}";
-  html += "button{font-size:30px;padding:26px 52px;border-radius:20px;margin:14px;}";
-  html += ".small{font-size:16px;color:#555;}";
+  html += "body{margin:0;background:#050505;color:white;font-family:sans-serif;text-align:center;}";
+  html += ".wrap{max-width:520px;margin:0 auto;padding:28px 18px;}";
+  html += "h1{font-size:34px;margin:22px 0 24px;}";
+  html += ".mainBtn{width:220px;height:220px;border-radius:50%;font-size:38px;font-weight:bold;border:8px solid #777;background:#111;color:white;box-shadow:0 0 26px #333;margin:10px auto 28px;display:block;}";
+  html += ".mainBtn:active{transform:scale(0.96);}";
+  html += ".row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:12px 0;}";
+  html += ".modeBtn{font-size:20px;padding:14px 18px;border-radius:16px;border:4px solid #555;background:#151515;color:white;min-width:150px;}";
+  html += ".normalActive{border-color:#00d060;box-shadow:0 0 16px #00d060;}";
+  html += ".speedActive{border-color:#ffd000;box-shadow:0 0 16px #ffd000;color:#ffe680;}";
+  html += ".switchBtn{font-size:20px;padding:14px 22px;border-radius:16px;border:3px solid #4aa3ff;background:#101820;color:white;margin-top:16px;}";
+  html += ".panel{background:#111;border:1px solid #333;border-radius:18px;padding:18px;margin:18px 0;text-align:left;}";
+  html += ".label{display:flex;justify-content:space-between;font-size:18px;margin-bottom:8px;}";
+  html += "input[type=range]{width:100%;}";
+  html += ".small{font-size:14px;color:#aaa;margin-top:18px;line-height:1.5;}";
   html += "</style>";
 
   html += "</head><body>";
+  html += "<div class='wrap'>";
 
   html += "<h1>Atom Servo</h1>";
 
-html += "<button id='goBtn' onclick='goServo()'>動かす</button>";
-html += "<br>";
+  html += "<button id='goBtn' class='mainBtn' onclick='goServo()'>動かす</button>";
 
-html += "<button onclick='normalMode()'>通常モード</button>";
-html += "<button onclick='speedMode()'>速度調整モード</button>";
-html += "<br>";
+  html += "<div class='row'>";
+  html += "<button id='normalBtn' class='modeBtn' onclick='normalMode()'>通常モード</button>";
+  html += "<button id='speedBtn' class='modeBtn' onclick='speedModeBtn()'>速度調整モード</button>";
+  html += "</div>";
 
-html += "<button id='bleBtn' onclick='switchBle()'>BLEモードへ切替</button>";
+  html += "<div class='panel'>";
+  html += "<div class='label'><span>回転角度</span><span><span id='angleVal'>--</span>°</span></div>";
+  html += "<input id='angleSlider' type='range' min='5' max='180' value='90' onpointerdown='sliderDragging=true' oninput='anglePreview()' onchange='setAngle()'>";
+  html += "</div>";
+
+  html += "<div class='panel'>";
+  html += "<div class='label'><span>回転速度</span><span><span id='speedVal'>--</span></span></div>";
+  html += "<input id='speedSlider' type='range' min='80' max='400' value='200' onpointerdown='sliderDragging=true' oninput='speedPreview()' onchange='setSpeed()'>";
+  html += "<div class='small'>左ほど速く、右ほどゆっくり動きます。</div>";
+  html += "</div>";
+
+  html += "<button id='bleBtn' class='switchBtn' onclick='switchBle()'>BLEモードへ切替</button>";
 
   html += "<p class='small'>SSID: ";
   html += ssidName;
-  html += "</p>";
+  html += "<br>通常モードは緑、速度調整モードは黄、動作中は赤です。</p>";
+
+  html += "</div>";
 
   html += "<script>";
+
+  html += "let currentModeSpeed=false;";
+  html += "let sliderDragging=false;";
+
+  html += "function updateModeButtons(){";
+  html += "const n=document.getElementById('normalBtn');";
+  html += "const s=document.getElementById('speedBtn');";
+  html += "n.classList.remove('normalActive');";
+  html += "s.classList.remove('speedActive');";
+  html += "if(currentModeSpeed){s.classList.add('speedActive');}else{n.classList.add('normalActive');}";
+  html += "}";
+
+  html += "function applyStatus(d){";
+  html += "currentModeSpeed=d.speedMode;";
+  html += "document.getElementById('angleSlider').value=d.angle;";
+  html += "document.getElementById('speedSlider').value=d.speed;";
+  html += "document.getElementById('angleVal').textContent=d.angle;";
+  html += "document.getElementById('speedVal').textContent=d.speed;";
+  html += "updateModeButtons();";
+  html += "}";
+
+  html += "function loadStatus(){";
+  html += "if(sliderDragging)return;";
+  html += "fetch('/status').then(r=>r.json()).then(applyStatus).catch(()=>{});";
+  html += "}";
 
   html += "function goServo(){";
   html += "const btn=document.getElementById('goBtn');";
   html += "btn.disabled=true;";
   html += "fetch('/go',{method:'POST'})";
-  html += ".finally(()=>{setTimeout(()=>{btn.disabled=false;},300);});";
+  html += ".finally(()=>{setTimeout(()=>{btn.disabled=false;loadStatus();},300);});";
   html += "}";
 
-html += "function normalMode(){";
-html += "fetch('/mode_normal',{method:'POST'});";
-html += "}";
+  html += "function normalMode(){";
+  html += "fetch('/mode_normal',{method:'POST'}).then(()=>loadStatus());";
+  html += "}";
 
-html += "function speedMode(){";
-html += "fetch('/mode_speed',{method:'POST'});";
-html += "}";
+  html += "function speedModeBtn(){";
+  html += "fetch('/mode_speed',{method:'POST'}).then(()=>loadStatus());";
+  html += "}";
+
+  html += "function anglePreview(){";
+  html += "document.getElementById('angleVal').textContent=document.getElementById('angleSlider').value;";
+  html += "}";
+
+  html += "function speedPreview(){";
+  html += "document.getElementById('speedVal').textContent=document.getElementById('speedSlider').value;";
+  html += "}";
+
+  html += "function setAngle(){";
+  html += "const v=document.getElementById('angleSlider').value;";
+  html += "fetch('/set_angle?value='+v,{method:'POST'})";
+  html += ".then(()=>fetch('/go',{method:'POST'}))";
+  html += ".finally(()=>{sliderDragging=false;setTimeout(loadStatus,300);});";
+  html += "}";
+
+  html += "function setSpeed(){";
+  html += "const v=document.getElementById('speedSlider').value;";
+  html += "fetch('/set_speed?value='+v,{method:'POST'})";
+  html += ".then(()=>fetch('/go',{method:'POST'}))";
+  html += ".finally(()=>{sliderDragging=false;setTimeout(loadStatus,300);});";
+  html += "}";
 
   html += "function switchBle(){";
   html += "const btn=document.getElementById('bleBtn');";
   html += "btn.disabled=true;";
   html += "fetch('/switch_ble',{method:'POST'})";
-  html += ".then(()=>{document.body.innerHTML='<h1>BLEモードへ切り替えます</h1><p>Atom Liteが自動再起動します。</p>';});";
+  html += ".then(()=>{document.body.innerHTML='<div style=\"color:white;background:#050505;font-family:sans-serif;text-align:center;padding-top:80px;\"><h1>BLEモードへ切り替えます</h1><p>Atom Liteが自動再起動します。</p></div>';});";
   html += "}";
+
+  html += "loadStatus();";
+  html += "setInterval(loadStatus,2000);";
 
   html += "</script>";
 
@@ -367,6 +453,21 @@ void startWiFiMode() {
     request->send(200, "text/html", makeRootHtml());
   });
 
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String json = "{";
+    json += "\"speedMode\":";
+    json += speedMode ? "true" : "false";
+    json += ",\"angle\":";
+    json += String(savedAngle);
+    json += ",\"speed\":";
+    json += String(speedSetting);
+    json += ",\"moving\":";
+    json += isMoving ? "true" : "false";
+    json += "}";
+
+    request->send(200, "application/json", json);
+  });
+
   server.on("/go", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (!isMoving && !webPressed) {
       webPressed = true;
@@ -376,17 +477,50 @@ void startWiFiMode() {
     }
   });
 
-server.on("/mode_normal", HTTP_POST, [](AsyncWebServerRequest *request) {
-  speedMode = false;
-  setWorkModeColor();
-  request->send(200, "text/plain", "NORMAL");
-});
+  server.on("/mode_normal", HTTP_POST, [](AsyncWebServerRequest *request) {
+    speedMode = false;
+    setWorkModeColor();
+    request->send(200, "text/plain", "NORMAL");
+  });
 
-server.on("/mode_speed", HTTP_POST, [](AsyncWebServerRequest *request) {
-  speedMode = true;
-  setWorkModeColor();
-  request->send(200, "text/plain", "SPEED");
-});
+  server.on("/mode_speed", HTTP_POST, [](AsyncWebServerRequest *request) {
+    speedMode = true;
+    setWorkModeColor();
+    request->send(200, "text/plain", "SPEED");
+  });
+
+  server.on("/set_angle", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("value")) {
+      int angle = request->getParam("value")->value().toInt();
+      angle = constrain(angle, 5, 180);
+      savedAngle = angle;
+      saveAngle(savedAngle);
+      lastKnobValue = analogRead(KNOB_PIN);
+      ignoreKnobUntil = millis() + 3000;
+      request->send(200, "text/plain", "ANGLE_OK");
+    } else {
+      request->send(400, "text/plain", "NO_VALUE");
+    }
+  });
+
+  server.on("/set_speed", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("value")) {
+      int speed = request->getParam("value")->value().toInt();
+      speed = constrain(speed, 80, 400);
+
+      if (speed < 90) {
+        speed = 80;
+      }
+
+      speedSetting = speed;
+      saveSpeed(speedSetting);
+      lastKnobValue = analogRead(KNOB_PIN);
+      ignoreKnobUntil = millis() + 3000;
+      request->send(200, "text/plain", "SPEED_OK");
+    } else {
+      request->send(400, "text/plain", "NO_VALUE");
+    }
+  });
 
   server.on("/switch_ble", HTTP_POST, [](AsyncWebServerRequest *request) {
     saveCommMode(COMM_BLE);
@@ -397,6 +531,7 @@ server.on("/mode_speed", HTTP_POST, [](AsyncWebServerRequest *request) {
   server.begin();
 
   setWorkModeColor();
+
   Serial.println();
   Serial.println("========== Wi-Fi MODE ==========");
   Serial.print("SSID : ");
@@ -421,26 +556,53 @@ class ServoCallback : public BLECharacteristicCallbacks {
     value.trim();
     value.toUpperCase();
 
-if (value == "GO") {
-  if (!isMoving && !blePressed) {
-    blePressed = true;
-  }
-}
+    if (value == "GO") {
+      if (!isMoving && !blePressed) {
+        blePressed = true;
+      }
+    }
 
-if (value == "NORMAL") {
-  speedMode = false;
-  setWorkModeColor();
-}
+    if (value == "NORMAL") {
+      speedMode = false;
+      setWorkModeColor();
+    }
 
-if (value == "SPEED") {
+   if (value == "SPEED") {
   speedMode = true;
   setWorkModeColor();
 }
 
-if (value == "WIFI") {
-  saveCommMode(COMM_WIFI);
-  requestRestart();
+if (value.startsWith("ANGLE:")) {
+  int angle = value.substring(6).toInt();
+  angle = constrain(angle, 5, 180);
+
+  savedAngle = angle;
+  saveAngle(savedAngle);
+
+  // BLE/HTMLで指定した角度を、直後に回転角ユニットで上書きしないため
+  lastKnobValue = analogRead(KNOB_PIN);
+  ignoreKnobUntil = millis() + 3000;
 }
+
+if (value.startsWith("SPEEDVALUE:")) {
+  int speed = value.substring(11).toInt();
+  speed = constrain(speed, 80, 400);
+
+  if (speed < 90) {
+    speed = 80;
+  }
+
+  speedSetting = speed;
+saveSpeed(speedSetting);
+
+lastKnobValue = analogRead(KNOB_PIN);
+ignoreKnobUntil = millis() + 3000;
+}
+
+if (value == "WIFI") {
+      saveCommMode(COMM_WIFI);
+      requestRestart();
+    }
   }
 };
 
@@ -485,6 +647,7 @@ void startBLEMode() {
   pAdvertising->start();
 
   setWorkModeColor();
+
   Serial.println();
   Serial.println("========== BLE MODE ==========");
   Serial.print("BLE Name : ");
@@ -551,31 +714,48 @@ void handlePhysicalInput() {
 
 // ==================================================
 // つまみ読み取り
+// Webスライダーで設定した値をすぐに上書きしないため、
+// 回転角ユニットが一定以上動いたときだけ反映する
 // ==================================================
 void updateKnob() {
+  if (millis() < ignoreKnobUntil) {
+    return;
+  }
+
   int knobValue = analogRead(KNOB_PIN);
 
+  if (lastKnobValue < 0) {
+    lastKnobValue = knobValue;
+    return;
+  }
+
+  if (abs(knobValue - lastKnobValue) < KNOB_CHANGE_THRESHOLD) {
+    return;
+  }
+
+  lastKnobValue = knobValue;
+
   if (!speedMode) {
-  int newAngle = knobToAngle(knobValue);
+    int newAngle = knobToAngle(knobValue);
 
-  if (newAngle != savedAngle) {
-    savedAngle = newAngle;
-    saveAngle(savedAngle);
+    if (newAngle != savedAngle) {
+      savedAngle = newAngle;
+      saveAngle(savedAngle);
+    }
+  } else {
+    int newSpeed = map(knobValue, 0, 4095, 80, 400);
+
+    if (newSpeed < 90) {
+      newSpeed = 80;
+    }
+
+    newSpeed = constrain(newSpeed, 80, 400);
+
+    if (newSpeed != speedSetting) {
+      speedSetting = newSpeed;
+      saveSpeed(speedSetting);
+    }
   }
-} else {
-  int newSpeed = map(knobValue, 0, 4095, 80, 400);
-
-  if (newSpeed < 90) {
-    newSpeed = 80;
-  }
-
-  newSpeed = constrain(newSpeed, 80, 400);
-
-  if (newSpeed != speedSetting) {
-    speedSetting = newSpeed;
-    saveSpeed(speedSetting);
-  }
-}
 }
 
 // ==================================================
@@ -666,24 +846,32 @@ void setup() {
 
   savedAngle = loadAngle();
   speedSetting = loadSpeed();
+
+  lastKnobValue = analogRead(KNOB_PIN);
+
   delay(100);
   M5.update();
 
-  bool bootAtomButtonPressed =
-    M5.Btn.isPressed();
+  bootAtomButtonPressed =
+  M5.Btn.isPressed();
 
-  bool bootButton1Pressed =
+  bootButton1Pressed =
     (digitalRead(BUTTON_PIN1) == LOW);
 
   if (bootAtomButtonPressed || bootButton1Pressed) {
-    speedMode = true;
-    waitButtonRelease = true;
-    Serial.println("Work mode: SPEED");
-  } else {
-    speedMode = false;
-    waitButtonRelease = false;
-    Serial.println("Work mode: NORMAL");
+  speedMode = true;
+  waitButtonRelease = true;
+
+  if (bootAtomButtonPressed) {
+    bootPressStart = millis();
   }
+
+  Serial.println("Work mode: SPEED");
+} else {
+  speedMode = false;
+  waitButtonRelease = false;
+  Serial.println("Work mode: NORMAL");
+}
 
   commMode = loadCommMode();
 
@@ -700,7 +888,36 @@ void setup() {
 void loop() {
   updateG39StableState();
 
-  handlePhysicalInput();
+// 本体ボタンを10秒以上押し続けたら通信モード反転
+bool atomButtonNow = M5.Btn.isPressed();
+
+if (atomButtonNow) {
+  if (atomHoldStart == 0) {
+    atomHoldStart = millis();
+  }
+
+  if (!atomHoldSwitchDone &&
+      millis() - atomHoldStart >= 10000) {
+
+    atomHoldSwitchDone = true;
+
+    if (commMode == COMM_WIFI) {
+      saveCommMode(COMM_BLE);
+      blinkBlueTwice();     // BLEへ切替合図
+    } else {
+      saveCommMode(COMM_WIFI);
+      blinkWhiteTwice();    // Wi-Fiへ切替合図
+    }
+
+    setOff();
+    requestRestart();
+  }
+} else {
+  atomHoldStart = 0;
+  atomHoldSwitchDone = false;
+}
+
+handlePhysicalInput();
 
   if (webPressed) {
     webPressed = false;
