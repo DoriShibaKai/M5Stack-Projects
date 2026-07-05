@@ -2,7 +2,8 @@
 #include <ESP32Servo.h>
 
 #include <WiFi.h>
-#include <WebServer.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
 
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -12,33 +13,37 @@
 Servo myServo;
 
 // ==================================================
+// 起動モード
+// ==================================================
+
+enum OperationMode {
+  MODE_WIFI,
+  MODE_BLE
+};
+
+OperationMode operationMode;
+
+// 起動時に押していたボタンを離すまで物理入力を無視する
+bool waitButtonRelease = false;
+
+// ==================================================
 // Wi-Fi設定
 // ==================================================
 
-// パスワード（8文字以上）変えてください。
 const char* password = "00000000";
-
-// SSID（Wi-Fi名）はMACアドレスから自動生成
 String ssidName;
-
-// Webサーバー
-WebServer server(80);
+AsyncWebServer server(80);
 
 // ==================================================
 // Bluetooth設定
 // ==================================================
 
-// Bluetooth名
 const char* BLE_NAME = "AtomServo";
 
-// BLE UUID
 #define SERVICE_UUID        "4FAFC201-1FB5-459E-8FCC-C5C9C331914B"
 #define CHARACTERISTIC_UUID "BEB5483E-36E1-4688-B7F5-EA07361B26A8"
 
 BLECharacteristic *pCharacteristic;
-
-// BLEから動作要求が来たか
-bool blePressed = false;
 
 // ==================================================
 // ピン設定
@@ -46,7 +51,7 @@ bool blePressed = false;
 
 const int SERVO_PIN   = 25;
 const int KNOB_PIN    = 32;
-const int BUTTON_PIN1 = 33;
+const int BUTTON_PIN1 = 22;
 const int BUTTON_PIN2 = 39;
 
 // ==================================================
@@ -55,11 +60,31 @@ const int BUTTON_PIN2 = 39;
 
 bool lastPressed = false;
 
-// Wi-Fi画面から押された
-bool webPressed = false;
+// イベントキュー
+volatile bool requestQueue = false;
+
+// 1往復終了フラグ
+bool servoFinished = true;
 
 // ==================================================
-// 回転角ユニット→サーボ角度
+// サーボステートマシン
+// ==================================================
+
+enum ServoState {
+  SERVO_IDLE,
+  SERVO_MOVING_FORWARD,
+  SERVO_MOVING_BACK
+};
+
+ServoState servoState = SERVO_IDLE;
+
+unsigned long servoTimer = 0;
+
+int targetAngle = 0;
+int moveTime = 0;
+
+// ==================================================
+// 回転角ユニット → サーボ角度
 // ==================================================
 
 int knobToAngle(int value) {
@@ -92,49 +117,100 @@ void setGreen() {
   M5.dis.drawpix(0, CRGB::Green);
 }
 
+void setBlue() {
+  M5.dis.drawpix(0, CRGB::Blue);
+}
+
+// 現在のモードに応じた待機色へ戻す
+void setModeColor() {
+
+  if (operationMode == MODE_WIFI) {
+    setGreen();
+  } else {
+    setBlue();
+  }
+}
+
 // ==================================================
-// サーボ1往復
-//
-// どこから呼んでも同じ動作
+// イベントキューに積む
 // ==================================================
 
-void moveServoOnce() {
+void requestServo() {
+  requestQueue = true;
+}
 
-  setGreen();
+// ==================================================
+// サーボ動作開始（非ブロッキング）
+// ==================================================
+
+void startServoMove() {
+
+  if (servoState != SERVO_IDLE) {
+    return;
+  }
+
+  servoFinished = false;
 
   int value = analogRead(KNOB_PIN);
 
-  int targetAngle = knobToAngle(value);
+  targetAngle = knobToAngle(value);
 
-  int moveTime = servoMoveTime(targetAngle);
+  moveTime = servoMoveTime(targetAngle);
 
-  Serial.print("ADC: ");
-  Serial.print(value);
+  Serial.printf(
+    "ADC: %d  Angle: %d  Wait: %d ms\n",
+    value,
+    targetAngle,
+    moveTime
+  );
 
-  Serial.print("  Angle: ");
-  Serial.print(targetAngle);
-
-  Serial.print("  Wait: ");
-  Serial.print(moveTime);
-
-  Serial.println(" ms");
+  // 入力ON・サーボ動作中は赤
+  setRed();
 
   myServo.write(targetAngle);
 
-  delay(moveTime);
+  servoTimer = millis();
 
-  myServo.write(0);
+  servoState = SERVO_MOVING_FORWARD;
+}
 
-  delay(moveTime);
+// ==================================================
+// サーボ更新（非ブロッキング）
+// ==================================================
 
-  setRed();
+void updateServo() {
+
+  if (servoState == SERVO_MOVING_FORWARD) {
+
+    if (millis() - servoTimer >= moveTime) {
+
+      myServo.write(0);
+
+      servoTimer = millis();
+
+      servoState = SERVO_MOVING_BACK;
+    }
+  }
+
+  else if (servoState == SERVO_MOVING_BACK) {
+
+    if (millis() - servoTimer >= moveTime) {
+
+      servoState = SERVO_IDLE;
+
+      servoFinished = true;
+
+      // 1往復終了後、現在のモード色へ戻す
+      setModeColor();
+    }
+  }
 }
 
 // ==================================================
 // Wi-Fi画面
 // ==================================================
 
-void handleRoot() {
+String handleRootHTML() {
 
   String html = "";
 
@@ -145,7 +221,7 @@ void handleRoot() {
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
 
   html += "<style>";
-  html += "body{font-family:sans-serif;text-align:center;margin-top:60px;}";
+  html += "body{text-align:center;margin-top:60px;font-family:sans-serif;}";
   html += "button{font-size:32px;padding:30px 60px;border-radius:20px;}";
   html += "</style>";
 
@@ -153,30 +229,32 @@ void handleRoot() {
 
   html += "<h1>Atom Servo</h1>";
 
-  html += "<form action='/go' method='POST'>";
-  html += "<button type='submit'>動かす</button>";
-  html += "</form>";
+  html += "<button id='goBtn' type='button' onclick='goServo()'>";
+  html += "動かす";
+  html += "</button>";
+
+  html += "<script>";
+
+  html += "function goServo(){";
+
+  html += "const btn=document.getElementById('goBtn');";
+
+  html += "btn.disabled=true;";
+
+  html += "fetch('/go',{method:'POST'})";
+  html += ".finally(()=>{btn.disabled=false;});";
+
+  html += "}";
+
+  html += "</script>";
 
   html += "</body></html>";
 
-  server.send(200, "text/html", html);
-}
-
-void handleGo() {
-
-  webPressed = true;
-
-  server.sendHeader("Location", "/");
-
-  server.send(303);
+  return html;
 }
 
 // ==================================================
-// Bluetooth受信
-//
-// iPhone/iPad/PCから文字列
-// "GO"
-// を受信するとサーボを動かす
+// BLE受信
 // ==================================================
 
 class ServoCallback : public BLECharacteristicCallbacks {
@@ -187,15 +265,223 @@ class ServoCallback : public BLECharacteristicCallbacks {
 
     value.trim();
 
-    if (value == "GO") {
+    if (value == "GO" && servoFinished) {
 
-      blePressed = true;
+      servoFinished = false;
 
+      requestServo();
+    }
+  }
+};
+
+// ==================================================
+// Wi-Fi開始
+// ==================================================
+
+void startWiFiMode() {
+
+  // ------------------------------------------
+  // SSID生成
+  // ------------------------------------------
+
+  uint64_t chipid = ESP.getEfuseMac();
+
+  char id[7];
+
+  sprintf(
+    id,
+    "%06X",
+    (uint32_t)(chipid & 0xFFFFFF)
+  );
+
+  ssidName = "AtomServo_" + String(id);
+
+  // ------------------------------------------
+  // 周辺Wi-Fiをスキャン
+  // ------------------------------------------
+
+  WiFi.mode(WIFI_STA);
+
+  WiFi.disconnect(true);
+
+  delay(100);
+
+  int score1 = 0;
+  int score6 = 0;
+  int score11 = 0;
+
+  int n = WiFi.scanNetworks();
+
+  for (int i = 0; i < n; i++) {
+
+    int ch = WiFi.channel(i);
+
+    int rssi = WiFi.RSSI(i);
+
+    int power = 100 + rssi;
+
+    if (ch >= 1 && ch <= 3) {
+      score1 += power;
     }
 
+    if (ch >= 4 && ch <= 8) {
+      score6 += power;
+    }
+
+    if (ch >= 9 && ch <= 13) {
+      score11 += power;
+    }
   }
 
-};
+  // ------------------------------------------
+  // 1 / 6 / 11 から選択
+  // ------------------------------------------
+
+  int bestChannel = 1;
+
+  if (score6 < score1 && score6 <= score11) {
+    bestChannel = 6;
+  }
+
+  if (score11 < score1 && score11 < score6) {
+    bestChannel = 11;
+  }
+
+  // ------------------------------------------
+  // AP開始
+  // ------------------------------------------
+
+  WiFi.mode(WIFI_AP);
+
+  WiFi.setSleep(false);
+
+  WiFi.softAP(
+    ssidName.c_str(),
+    password,
+    bestChannel,
+    false,
+    2
+  );
+
+  Serial.println();
+  Serial.println("========== Wi-Fi MODE ==========");
+
+  Serial.print("SSID : ");
+  Serial.println(ssidName);
+
+  Serial.print("PASS : ");
+  Serial.println(password);
+
+  Serial.print("Channel : ");
+  Serial.println(bestChannel);
+
+  Serial.print("Open : http://");
+  Serial.println(WiFi.softAPIP());
+
+  // ------------------------------------------
+  // Webサーバー
+  // ------------------------------------------
+
+  server.on(
+    "/",
+    HTTP_GET,
+    [](AsyncWebServerRequest *request) {
+
+      request->send(
+        200,
+        "text/html",
+        handleRootHTML()
+      );
+    }
+  );
+
+  server.on(
+    "/go",
+    HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+
+      if (servoFinished) {
+
+        servoFinished = false;
+
+        requestServo();
+
+        request->send(
+          200,
+          "text/plain",
+          "OK"
+        );
+
+      } else {
+
+        request->send(
+          409,
+          "text/plain",
+          "BUSY"
+        );
+      }
+    }
+  );
+
+  server.begin();
+
+  // Wi-Fiモード待機色
+  setGreen();
+}
+
+// ==================================================
+// BLE開始
+// ==================================================
+
+void startBLEMode() {
+
+  BLEDevice::init(BLE_NAME);
+
+  BLEServer *pServer =
+    BLEDevice::createServer();
+
+  BLEService *pService =
+    pServer->createService(SERVICE_UUID);
+
+  pCharacteristic =
+    pService->createCharacteristic(
+      CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_READ |
+      BLECharacteristic::PROPERTY_WRITE
+    );
+
+  pCharacteristic->addDescriptor(
+    new BLE2902()
+  );
+
+  pCharacteristic->setCallbacks(
+    new ServoCallback()
+  );
+
+  pCharacteristic->setValue("READY");
+
+  pService->start();
+
+  BLEAdvertising *pAdvertising =
+    BLEDevice::getAdvertising();
+
+  pAdvertising->addServiceUUID(
+    SERVICE_UUID
+  );
+
+  pAdvertising->start();
+
+  Serial.println();
+  Serial.println("========== BLE MODE ==========");
+
+  Serial.print("BLE Name : ");
+  Serial.println(BLE_NAME);
+
+  Serial.println("Waiting BLE connection...");
+
+  // BLEモード待機色
+  setBlue();
+}
 
 // ==================================================
 // 初期設定
@@ -206,7 +492,7 @@ void setup() {
   // Atom Lite初期化
   M5.begin(true, false, true);
 
-  // ボタン設定
+  // 物理入力
   pinMode(BUTTON_PIN1, INPUT_PULLUP);
   pinMode(BUTTON_PIN2, INPUT_PULLUP);
 
@@ -215,82 +501,65 @@ void setup() {
 
   // サーボ初期設定
   myServo.setPeriodHertz(50);
-  myServo.attach(SERVO_PIN, 500, 2400);
+
+  myServo.attach(
+    SERVO_PIN,
+    500,
+    2400
+  );
+
   myServo.write(0);
 
-  setRed();
-
   // ------------------------------------------
-  // Wi-Fi名(SSID)をMACアドレスから自動生成
+  // 起動モード判定
   // ------------------------------------------
 
-  uint64_t chipid = ESP.getEfuseMac();
+  delay(100);
 
-  char id[7];
+  M5.update();
 
-  sprintf(id, "%06X", (uint32_t)(chipid & 0xFFFFFF));
+  bool atomButtonPressed =
+    M5.Btn.isPressed();
 
-  ssidName = "AtomServo_" + String(id);
+  bool gpio22Pressed =
+    (digitalRead(BUTTON_PIN1) == LOW);
 
-  // Atom Lite自身がWi-Fiアクセスポイントになる
-  WiFi.softAP(ssidName.c_str(), password);
+  // 本体ボタンまたはGPIO22を押しながら起動
+  // → BLEモード
+  if (atomButtonPressed || gpio22Pressed) {
 
-  Serial.println();
-  Serial.println("========== Wi-Fi ==========");
+    operationMode = MODE_BLE;
 
-  Serial.print("SSID : ");
-  Serial.println(ssidName);
+    // 起動時に押していた入力を
+    // サーボ操作として誤認しない
+    waitButtonRelease = true;
 
-  Serial.print("PASS : ");
-  Serial.println(password);
+    Serial.println("Boot mode: BLE");
+  }
 
-  Serial.print("Open : http://");
-  Serial.println(WiFi.softAPIP());
+  // 通常起動
+  // → Wi-Fiモード
+  else {
 
-  // Webサーバー開始
-  server.on("/", handleRoot);
-  server.on("/go", HTTP_POST, handleGo);
-  server.begin();
+    operationMode = MODE_WIFI;
+
+    waitButtonRelease = false;
+
+    Serial.println("Boot mode: Wi-Fi");
+  }
 
   // ------------------------------------------
-  // Bluetooth(BLE)開始
+  // 選択された通信方式だけ起動
   // ------------------------------------------
 
-  BLEDevice::init(BLE_NAME);
+  if (operationMode == MODE_WIFI) {
 
-  BLEServer *pServer = BLEDevice::createServer();
+    startWiFiMode();
 
-  BLEService *pService =
-      pServer->createService(SERVICE_UUID);
+  } else {
 
-  pCharacteristic =
-      pService->createCharacteristic(
-          CHARACTERISTIC_UUID,
-          BLECharacteristic::PROPERTY_READ |
-          BLECharacteristic::PROPERTY_WRITE);
-
-  pCharacteristic->addDescriptor(new BLE2902());
-
-  pCharacteristic->setCallbacks(new ServoCallback());
-
-  pCharacteristic->setValue("READY");
-
-  pService->start();
-
-  BLEAdvertising *pAdvertising =
-      BLEDevice::getAdvertising();
-
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-
-  pAdvertising->start();
-
-  Serial.println();
-  Serial.println("======= Bluetooth =======");
-
-  Serial.print("BLE Name : ");
-  Serial.println(BLE_NAME);
-
-  Serial.println("Waiting BLE connection...");
+    startBLEMode();
+  }
 }
 
 // ==================================================
@@ -299,50 +568,112 @@ void setup() {
 
 void loop() {
 
-  // Wi-Fiアクセス受付
-  server.handleClient();
+  M5.update();
 
-  // -------------------------
+  // ------------------------------------------
   // 物理ボタン
-  // -------------------------
+  // ------------------------------------------
 
+  static unsigned long pin39LowStart = 0;
+
+  bool atomButtonPressed =
+    M5.Btn.isPressed();
+
+  bool pin22Pressed =
+    (digitalRead(BUTTON_PIN1) == LOW);
+
+  bool pin39RawLow =
+    (digitalRead(BUTTON_PIN2) == LOW);
+
+  bool pin39Pressed = false;
+
+  // ------------------------------------------
+  // GPIO39
+  // 50ms継続LOWで押下判定
+  // ------------------------------------------
+
+  if (pin39RawLow) {
+
+    if (pin39LowStart == 0) {
+
+      pin39LowStart = millis();
+    }
+
+    if (millis() - pin39LowStart >= 50) {
+
+      pin39Pressed = true;
+    }
+
+  } else {
+
+    pin39LowStart = 0;
+  }
+
+  // 3種類の物理入力
   bool pressed =
-      (digitalRead(BUTTON_PIN1) == LOW) ||
-      (digitalRead(BUTTON_PIN2) == LOW);
+    atomButtonPressed ||
+    pin22Pressed ||
+    pin39Pressed;
 
-  // 押した瞬間だけ動作
-  if (!lastPressed && pressed) {
+  // ------------------------------------------
+  // BLEモード選択時
+  // 起動時に押していたボタンを
+  // 一度離すまで入力無視
+  // ------------------------------------------
 
-    moveServoOnce();
+  if (waitButtonRelease) {
 
+    if (!atomButtonPressed && !pin22Pressed) {
+
+      waitButtonRelease = false;
+
+      lastPressed = false;
+    }
+
+    updateServo();
+
+    delay(2);
+
+    return;
   }
 
-  // -------------------------
-  // Wi-Fiボタン
-  // -------------------------
+  // ------------------------------------------
+  // 押した瞬間だけ受付
+  // ------------------------------------------
 
-  if (webPressed) {
+  if (
+    !lastPressed &&
+    pressed &&
+    servoFinished
+  ) {
 
-    webPressed = false;
+    servoFinished = false;
 
-    moveServoOnce();
-
-  }
-
-  // -------------------------
-  // Bluetooth命令
-  // -------------------------
-
-  if (blePressed) {
-
-    blePressed = false;
-
-    moveServoOnce();
-
+    requestServo();
   }
 
   // 状態保存
   lastPressed = pressed;
 
-  delay(5);
+  // ------------------------------------------
+  // キュー処理
+  // ------------------------------------------
+
+  if (
+    servoState == SERVO_IDLE &&
+    requestQueue
+  ) {
+
+    requestQueue = false;
+
+    startServoMove();
+  }
+
+  // ------------------------------------------
+  // サーボ更新
+  // ------------------------------------------
+
+  updateServo();
+
+  delay(2);
 }
