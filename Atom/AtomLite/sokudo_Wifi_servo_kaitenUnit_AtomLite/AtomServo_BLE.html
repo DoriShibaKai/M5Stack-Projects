@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Atom Servo BLE</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <style>
+    body {
+      margin: 0;
+      background: #050505;
+      color: white;
+      font-family: sans-serif;
+      text-align: center;
+    }
+
+    .wrap {
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 18px 18px;
+    }
+
+    h1 {
+      font-size: 30px;
+      margin: 14px 0 14px;
+    }
+
+    .topRow {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .topBtn {
+      font-size: 18px;
+      padding: 12px 18px;
+      border-radius: 16px;
+      border: 3px solid #4aa3ff;
+      background: #101820;
+      color: white;
+    }
+
+    .mainBtn {
+      width: 190px;
+      height: 190px;
+      border-radius: 50%;
+      font-size: 34px;
+      font-weight: bold;
+      border: 8px solid #777;
+      background: #111;
+      color: white;
+      box-shadow: 0 0 22px #333;
+      margin: 8px auto 20px;
+      display: block;
+    }
+
+    .mainBtn:active {
+      transform: scale(0.96);
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin: 10px 0;
+    }
+
+    .modeBtn {
+      font-size: 19px;
+      padding: 12px 16px;
+      border-radius: 16px;
+      border: 4px solid #555;
+      background: #151515;
+      color: white;
+      min-width: 145px;
+    }
+
+    .normalActive {
+      border-color: #00d060;
+      box-shadow: 0 0 14px #00d060;
+    }
+
+    .speedActive {
+      border-color: #ffd000;
+      box-shadow: 0 0 14px #ffd000;
+      color: #ffe680;
+    }
+
+    .panel {
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 18px;
+      padding: 14px 18px;
+      margin: 14px 0;
+      text-align: left;
+    }
+
+    .label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 18px;
+      margin-bottom: 6px;
+    }
+
+    input[type=range] {
+      width: 100%;
+    }
+
+    .small {
+      font-size: 13px;
+      color: #aaa;
+      margin-top: 10px;
+      line-height: 1.4;
+    }
+
+    #status {
+      font-size: 15px;
+      color: #ddd;
+      margin-top: 12px;
+      word-break: break-word;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="wrap">
+
+    <h1>Atom Servo BLE</h1>
+
+    <div class="topRow">
+      <button class="topBtn" onclick="connectBLE()">BLE接続</button>
+      <button id="wifiBtn" class="topBtn" onclick="sendWIFI()">Wi-Fiへ戻す</button>
+    </div>
+
+    <button id="goBtn" class="mainBtn" onclick="sendGO()">動かす</button>
+
+    <div class="row">
+      <button id="normalBtn" class="modeBtn normalActive" onclick="sendNORMAL()">通常モード</button>
+      <button id="speedBtn" class="modeBtn" onclick="sendSPEED()">速度調整モード</button>
+    </div>
+
+    <div class="panel">
+      <div class="label">
+        <span>回転角度</span>
+        <span><span id="angleVal">90</span>°</span>
+      </div>
+
+      <input
+        id="angleSlider"
+        type="range"
+        min="5"
+        max="180"
+        value="90"
+        oninput="anglePreview()"
+        onchange="setAngle()">
+    </div>
+
+    <div class="panel">
+      <div class="label">
+        <span>回転速度</span>
+        <span id="speedVal">200</span>
+      </div>
+
+      <input
+        id="speedSlider"
+        type="range"
+        min="80"
+        max="400"
+        value="200"
+        oninput="speedPreview()"
+        onchange="setSpeed()">
+
+      <div class="small">
+        左ほど速く、右ほどゆっくり動きます。
+      </div>
+    </div>
+
+    <p id="status">未接続</p>
+
+  </div>
+
+
+<script>
+
+const SERVICE_UUID =
+  "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+
+const CHARACTERISTIC_UUID =
+  "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+let characteristic = null;
+let currentModeSpeed = false;
+let wifiConfirm = false;
+
+
+// ==================================================
+// モードボタン表示
+// ==================================================
+function updateModeButtons() {
+  const normalBtn =
+    document.getElementById("normalBtn");
+
+  const speedBtn =
+    document.getElementById("speedBtn");
+
+  normalBtn.classList.remove("normalActive");
+  speedBtn.classList.remove("speedActive");
+
+  if (currentModeSpeed) {
+    speedBtn.classList.add("speedActive");
+  } else {
+    normalBtn.classList.add("normalActive");
+  }
+}
+
+
+// ==================================================
+// BLE接続
+// ==================================================
+async function connectBLE() {
+  try {
+    document.getElementById("status").textContent =
+      "BLE機器を探しています...";
+
+    const device =
+      await navigator.bluetooth.requestDevice({
+        filters: [
+          { name: "AtomServo" }
+        ],
+        optionalServices: [
+          SERVICE_UUID
+        ]
+      });
+
+    const server =
+      await device.gatt.connect();
+
+    const service =
+      await server.getPrimaryService(
+        SERVICE_UUID
+      );
+
+    characteristic =
+      await service.getCharacteristic(
+        CHARACTERISTIC_UUID
+      );
+
+    document.getElementById("status").textContent =
+      "接続しました";
+
+  } catch (error) {
+    document.getElementById("status").textContent =
+      "接続失敗: " + error;
+  }
+}
+
+
+// ==================================================
+// BLE文字列送信
+// ==================================================
+async function sendText(text) {
+  if (!characteristic) {
+    document.getElementById("status").textContent =
+      "先にBLE接続してください";
+    return false;
+  }
+
+  try {
+    const encoder = new TextEncoder();
+
+    await characteristic.writeValue(
+      encoder.encode(text)
+    );
+
+    document.getElementById("status").textContent =
+      text + " を送信しました";
+
+    return true;
+
+  } catch (error) {
+    document.getElementById("status").textContent =
+      "送信失敗: " + error;
+
+    return false;
+  }
+}
+
+
+// ==================================================
+// 動かす
+// ==================================================
+async function sendGO() {
+  const btn =
+    document.getElementById("goBtn");
+
+  btn.disabled = true;
+
+  await sendText("GO");
+
+  setTimeout(() => {
+    btn.disabled = false;
+  }, 300);
+}
+
+
+// ==================================================
+// 通常モード
+// ==================================================
+async function sendNORMAL() {
+  const ok =
+    await sendText("NORMAL");
+
+  if (ok) {
+    currentModeSpeed = false;
+    updateModeButtons();
+  }
+}
+
+
+// ==================================================
+// 速度調整モード
+// ==================================================
+async function sendSPEED() {
+  const ok =
+    await sendText("SPEED");
+
+  if (ok) {
+    currentModeSpeed = true;
+    updateModeButtons();
+  }
+}
+
+
+// ==================================================
+// 回転角度スライダー
+// ==================================================
+function anglePreview() {
+  const value =
+    document.getElementById("angleSlider").value;
+
+  document.getElementById("angleVal").textContent =
+    value;
+}
+
+async function setAngle() {
+  const value =
+    document.getElementById("angleSlider").value;
+
+  const ok =
+    await sendText("ANGLE:" + value);
+
+  if (ok) {
+    setTimeout(() => {
+      sendText("GO");
+    }, 200);
+  }
+}
+
+// ==================================================
+// 回転速度スライダー
+// ==================================================
+function speedPreview() {
+  const value =
+    document.getElementById("speedSlider").value;
+
+  document.getElementById("speedVal").textContent =
+    value;
+}
+
+async function setSpeed() {
+  const value =
+    document.getElementById("speedSlider").value;
+
+  const ok =
+    await sendText("SPEEDVALUE:" + value);
+
+  if (ok) {
+    await sendText("GO");
+  }
+}
+
+
+// ==================================================
+// Wi-Fiモードへ切替
+// 誤操作防止のため2回押し
+// ==================================================
+async function sendWIFI() {
+  const wifiBtn =
+    document.getElementById("wifiBtn");
+
+  if (!wifiConfirm) {
+    wifiConfirm = true;
+
+    wifiBtn.innerHTML =
+      "BLE切断します<br><span style='color:#ff4d4d;'>いいですか？</span>";
+
+    document.getElementById("status").textContent =
+      "確認中";
+
+    setTimeout(() => {
+      wifiConfirm = false;
+      wifiBtn.textContent = "Wi-Fiへ戻す";
+    }, 4000);
+
+    return;
+  }
+
+  const ok =
+    await sendText("WIFI");
+
+  if (ok) {
+    document.getElementById("status").textContent =
+      "Wi-Fiモードへ切り替えます。Atom Liteが自動再起動します。";
+  }
+}
+
+updateModeButtons();
+
+</script>
+
+</body>
+</html>
