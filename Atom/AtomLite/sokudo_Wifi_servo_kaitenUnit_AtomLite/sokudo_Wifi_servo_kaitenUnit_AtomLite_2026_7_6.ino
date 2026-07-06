@@ -81,7 +81,12 @@ int speedSetting = 200;
 // 回転角ユニットとWebスライダーの共存用
 int lastKnobValue = -1;
 const int KNOB_CHANGE_THRESHOLD = 25;
-unsigned long ignoreKnobUntil = 0;
+enum LastControl {
+  CONTROL_KNOB,
+  CONTROL_BAR
+};
+
+LastControl lastControl = CONTROL_KNOB;
 
 // ==================================================
 // ノンブロッキング制御
@@ -208,6 +213,22 @@ CommMode loadCommMode() {
   }
 
   return COMM_WIFI;
+}
+
+void sendBleStatus() {
+  if (commMode != COMM_BLE) return;
+  if (pCharacteristic == nullptr) return;
+
+  String status = "STATUS:";
+  status += "ANGLE:";
+  status += String(savedAngle);
+  status += ",SPEED:";
+  status += String(speedSetting);
+  status += ",MODE:";
+  status += speedMode ? "SPEED" : "NORMAL";
+
+  pCharacteristic->setValue(status.c_str());
+  pCharacteristic->notify();
 }
 
 void requestRestart() {
@@ -495,8 +516,9 @@ void startWiFiMode() {
       angle = constrain(angle, 5, 180);
       savedAngle = angle;
       saveAngle(savedAngle);
+      lastControl = CONTROL_BAR;
       lastKnobValue = analogRead(KNOB_PIN);
-      ignoreKnobUntil = millis() + 3000;
+      
       request->send(200, "text/plain", "ANGLE_OK");
     } else {
       request->send(400, "text/plain", "NO_VALUE");
@@ -513,9 +535,10 @@ void startWiFiMode() {
       }
 
       speedSetting = speed;
-      saveSpeed(speedSetting);
-      lastKnobValue = analogRead(KNOB_PIN);
-      ignoreKnobUntil = millis() + 3000;
+saveSpeed(speedSetting);
+lastControl = CONTROL_BAR;
+lastKnobValue = analogRead(KNOB_PIN);
+      
       request->send(200, "text/plain", "SPEED_OK");
     } else {
       request->send(400, "text/plain", "NO_VALUE");
@@ -579,9 +602,11 @@ if (value.startsWith("ANGLE:")) {
   savedAngle = angle;
   saveAngle(savedAngle);
 
-  // BLE/HTMLで指定した角度を、直後に回転角ユニットで上書きしないため
+  // 最後に操作したのはBLEバー
+  lastControl = CONTROL_BAR;
   lastKnobValue = analogRead(KNOB_PIN);
-  ignoreKnobUntil = millis() + 3000;
+
+  sendBleStatus();
 }
 
 if (value.startsWith("SPEEDVALUE:")) {
@@ -593,10 +618,13 @@ if (value.startsWith("SPEEDVALUE:")) {
   }
 
   speedSetting = speed;
-saveSpeed(speedSetting);
+  saveSpeed(speedSetting);
 
-lastKnobValue = analogRead(KNOB_PIN);
-ignoreKnobUntil = millis() + 3000;
+  // 最後に操作したのはBLEバー
+  lastControl = CONTROL_BAR;
+  lastKnobValue = analogRead(KNOB_PIN);
+
+  sendBleStatus();
 }
 
 if (value == "WIFI") {
@@ -628,7 +656,8 @@ void startBLEMode() {
     pService->createCharacteristic(
       CHARACTERISTIC_UUID,
       BLECharacteristic::PROPERTY_READ |
-      BLECharacteristic::PROPERTY_WRITE
+BLECharacteristic::PROPERTY_WRITE |
+BLECharacteristic::PROPERTY_NOTIFY
     );
 
   pCharacteristic->addDescriptor(new BLE2902());
@@ -718,7 +747,9 @@ void handlePhysicalInput() {
 // 回転角ユニットが一定以上動いたときだけ反映する
 // ==================================================
 void updateKnob() {
-  if (millis() < ignoreKnobUntil) {
+
+  if (isMoving) {
+    lastKnobValue = analogRead(KNOB_PIN);
     return;
   }
 
@@ -729,11 +760,18 @@ void updateKnob() {
     return;
   }
 
-  if (abs(knobValue - lastKnobValue) < KNOB_CHANGE_THRESHOLD) {
+  int threshold = KNOB_CHANGE_THRESHOLD;
+
+  if (lastControl == CONTROL_BAR) {
+    threshold = 200;
+  }
+
+  if (abs(knobValue - lastKnobValue) < threshold) {
     return;
   }
 
   lastKnobValue = knobValue;
+  lastControl = CONTROL_KNOB;
 
   if (!speedMode) {
     int newAngle = knobToAngle(knobValue);
@@ -741,7 +779,9 @@ void updateKnob() {
     if (newAngle != savedAngle) {
       savedAngle = newAngle;
       saveAngle(savedAngle);
+      sendBleStatus();
     }
+
   } else {
     int newSpeed = map(knobValue, 0, 4095, 80, 400);
 
@@ -754,6 +794,7 @@ void updateKnob() {
     if (newSpeed != speedSetting) {
       speedSetting = newSpeed;
       saveSpeed(speedSetting);
+      sendBleStatus();
     }
   }
 }
