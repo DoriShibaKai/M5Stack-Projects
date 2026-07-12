@@ -48,7 +48,7 @@ Preferences preferences; // タイマー時間・動作モード用
 // ==================================================
 // Wi-Fi設定
 // ==================================================
-const char* password = "12345678";
+const char* password = "00000000";
 String ssidName;
 
 AsyncWebServer server(80);
