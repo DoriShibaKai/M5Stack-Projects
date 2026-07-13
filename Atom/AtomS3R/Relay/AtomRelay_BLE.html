@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Atom Relay BLE</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <style>
+    body {
+      margin: 0;
+      background: #050505;
+      color: white;
+      font-family: sans-serif;
+      text-align: center;
+    }
+
+    .wrap {
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 32px 18px;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      margin: 0 0 24px;
+      color: #fff;
+    }
+
+    .topRow {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-bottom: 32px;
+    }
+
+    .topBtn {
+      font-size: 14px;
+      font-weight: bold;
+      padding: 10px 20px;
+      border-radius: 20px;
+      border: 2px solid #2d4f7c;
+      background: #0a1118;
+      color: #4aa3ff;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .topBtn:active {
+      background: #102236;
+      transform: scale(0.95);
+    }
+
+    #wifiBtn {
+      border-color: #444;
+      background: #111;
+      color: #aaa;
+    }
+
+    #wifiBtn:active {
+      background: #222;
+    }
+
+    .mainBtn {
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      font-size: 46px;
+      font-weight: bold;
+      border: 6px solid #333;
+      background: radial-gradient(circle, #1a1a1a 0%, #111 100%);
+      color: #666;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      margin: 0 auto 36px;
+      display: block;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      transition: all 0.15s;
+    }
+
+    /* 押されている間（アクティブ状態）は中心のONの周りが赤く光る（Wi-Fi版準拠） */
+    .mainBtn.active {
+      color: #fff;
+      border-color: #ff3b30;
+      box-shadow:
+        0 0 16px rgba(255, 59, 48, 0.8),
+        0 0 35px rgba(255, 59, 48, 0.4);
+    }
+
+    .modeRow {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-bottom: 24px;
+    }
+
+    .modeBtn {
+      font-size: 15px;
+      font-weight: 500;
+      padding: 12px 20px;
+      border-radius: 16px;
+      border: 2px solid #222;
+      background: #111;
+      color: #888;
+      cursor: pointer;
+      transition: all 0.25s;
+    }
+
+    .directActive {
+      border-color: #007aff;
+      color: #fff;
+      box-shadow: 0 0 15px rgba(0, 122, 255, 0.4);
+      background: #001a33;
+    }
+
+    .latchActive {
+      border-color: #34c759;
+      color: #fff;
+      box-shadow: 0 0 15px rgba(52, 199, 89, 0.4);
+      background: #052e14;
+    }
+
+    .timerActive {
+      border-color: #ff9500;
+      color: #fff;
+      box-shadow: 0 0 15px rgba(255, 149, 0, 0.4);
+      background: #2e1a00;
+    }
+
+    .timerConfig {
+      display: none;
+      margin: 24px auto 12px;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .timerInputWrapper {
+      display: inline-flex;
+      align-items: center;
+      background: #16161a;
+      border: 1px solid #2c2c35;
+      padding: 6px 14px;
+      border-radius: 24px;
+      margin-right: 12px;
+      vertical-align: middle;
+    }
+
+    .timerInputWrapper input {
+      font-size: 20px;
+      font-weight: bold;
+      padding: 4px;
+      width: 80px;
+      text-align: center;
+      border: none;
+      background: transparent;
+      color: #ff9500;
+      outline: none;
+    }
+
+    .timerInputWrapper input::-webkit-outer-spin-button,
+    .timerInputWrapper input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .timerInputWrapper .unit {
+      color: #666;
+      font-size: 14px;
+      margin-left: 4px;
+      padding-right: 4px;
+    }
+
+    .timerConfig button {
+      font-size: 15px;
+      font-weight: bold;
+      padding: 12px 24px;
+      border-radius: 24px;
+      border: none;
+      background: #ff9500;
+      color: #000;
+      cursor: pointer;
+      vertical-align: middle;
+      transition: all 0.2s;
+      box-shadow: 0 4px 12px rgba(255, 149, 0, 0.2);
+    }
+
+    .timerConfig button:active {
+      transform: scale(0.96);
+      opacity: 0.9;
+    }
+
+    #status {
+      font-size: 13px;
+      color: #666;
+      margin-top: 32px;
+      font-family: monospace;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>Atom Relay BLE</h1>
+
+    <div class="topRow">
+      <button class="topBtn" onclick="connectBLE()">BLE接続</button>
+      <button id="wifiBtn" class="topBtn" onclick="sendWIFI()">Wi-Fiへ戻す</button>
+    </div>
+
+    <button id="relayBtn" class="mainBtn">ON</button>
+
+    <div class="modeRow">
+      <button id="directBtn" class="modeBtn" onclick="sendMode('DIRECT')">
+        ダイレクト
+      </button>
+      <button id="latchBtn" class="modeBtn" onclick="sendMode('LATCH')">
+        ラッチ
+      </button>
+      <button id="timerBtn" class="modeBtn" onclick="sendMode('TIMER')">
+        タイマー
+      </button>
+    </div>
+
+    <div id="timerPanel" class="timerConfig">
+      <div class="timerInputWrapper">
+        <input type="number" id="timerInput" min="1" value="2">
+        <span class="unit">秒</span>
+      </div>
+      <button onclick="sendTimerTime()">設定する</button>
+    </div>
+
+    <p id="status">未接続</p>
+  </div>
+
+  <script>
+    const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+    const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+    let bleDevice = null;
+    let bleServer = null;
+    let characteristic = null;
+    let wifiConfirm = false;
+
+    let currentMode = "DIRECT";
+    let timerEditing = false;
+    
+    // Wi-Fi版のバグ対策・タイマー挙動同期用変数
+    let latchRelayOn = false;
+    let timerActiveTimeout = null;
+
+    const relayBtn = document.getElementById("relayBtn");
+    const timerInput = document.getElementById("timerInput");
+
+    timerInput.addEventListener("focus", () => {
+      timerEditing = true;
+    });
+
+    timerInput.addEventListener("input", () => {
+      timerEditing = true;
+    });
+
+    timerInput.addEventListener("blur", () => {
+      setTimeout(() => {
+        timerEditing = false;
+      }, 300);
+    });
+
+    function updateModeDisplay(mode) {
+      currentMode = mode.trim().toUpperCase();
+
+      const directBtn = document.getElementById("directBtn");
+      const latchBtn = document.getElementById("latchBtn");
+      const timerBtn = document.getElementById("timerBtn");
+      const timerPanel = document.getElementById("timerPanel");
+
+      directBtn.classList.remove("directActive");
+      latchBtn.classList.remove("latchActive");
+      timerBtn.classList.remove("timerActive");
+
+      if (currentMode === "DIRECT") {
+        directBtn.classList.add("directActive");
+        timerPanel.style.display = "none";
+      } else if (currentMode === "LATCH") {
+        latchBtn.classList.add("latchActive");
+        timerPanel.style.display = "none";
+      } else if (currentMode === "TIMER") {
+        timerBtn.classList.add("timerActive");
+        timerPanel.style.display = "block";
+      }
+    }
+
+    function applyStatusText(text) {
+      if (!text.startsWith("STATUS:")) {
+        return;
+      }
+
+      const mode = text.match(/MODE:([A-Z]+)/);
+      const relay = text.match(/RELAY:(ON|OFF)/);
+      const timer = text.match(/TIME:(\d+)/);
+
+      if (mode) {
+        // 本体側やエンコーダで切り替わった場合も、現在のUI表示を追従させる
+        const newMode = mode[1].toUpperCase();
+        if (currentMode !== newMode) {
+          updateModeDisplay(newMode);
+          
+          // Wi-Fi版準拠：タイマーカウント中に他モードへ切り替わった際のUIリセット
+          if (newMode !== "TIMER" && timerActiveTimeout !== null) {
+            clearTimeout(timerActiveTimeout);
+            timerActiveTimeout = null;
+          }
+        }
+      }
+
+      if (relay) {
+        const isOn = (relay[1] === "ON");
+        relayBtn.classList.toggle("active", isOn);
+        
+        // 内部状態を本体の最新状態と同期
+        if (currentMode === "LATCH") {
+          latchRelayOn = isOn;
+        }
+      }
+
+      if (timer && !timerEditing) {
+        timerInput.value = Number(timer[1]);
+      }
+
+      document.getElementById("status").textContent = "RX: " + text;
+    }
+
+    function handleBleNotification(event) {
+      const decoder = new TextDecoder("utf-8");
+      const text = decoder.decode(event.target.value);
+      applyStatusText(text);
+    }
+
+    async function enableNotifications() {
+      await characteristic.startNotifications();
+      characteristic.removeEventListener("characteristicvaluechanged", handleBleNotification);
+      characteristic.addEventListener("characteristicvaluechanged", handleBleNotification);
+    }
+
+    function handleDisconnected() {
+      characteristic = null;
+      bleServer = null;
+      document.getElementById("status").textContent = "STATUS: Disconnected";
+      
+      // 切断時は安全のためタイマー等をクリーンアップ
+      if (timerActiveTimeout !== null) {
+        clearTimeout(timerActiveTimeout);
+        timerActiveTimeout = null;
+      }
+      relayBtn.classList.remove("active");
+    }
+
+    async function connectBLE() {
+      try {
+        document.getElementById("status").textContent = "STATUS: Searching...";
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ name: "AtomRelay" }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        bleDevice.addEventListener("gattserverdisconnected", handleDisconnected);
+        document.getElementById("status").textContent = "STATUS: Connecting...";
+        bleServer = await bleDevice.gatt.connect();
+
+        const service = await bleServer.getPrimaryService(SERVICE_UUID);
+        characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+        await enableNotifications();
+        document.getElementById("status").textContent = "STATUS: Connected";
+
+        setTimeout(() => {
+          sendText("STATUS");
+        }, 500);
+      } catch (error) {
+        document.getElementById("status").textContent = "ERROR: " + error;
+      }
+    }
+
+    async function reconnectIfNeeded() {
+      if (!bleDevice) return false;
+      if (bleDevice.gatt.connected && characteristic) return true;
+
+      try {
+        document.getElementById("status").textContent = "STATUS: Reconnecting...";
+        bleServer = await bleDevice.gatt.connect();
+        const service = await bleServer.getPrimaryService(SERVICE_UUID);
+        characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+        await enableNotifications();
+        document.getElementById("status").textContent = "STATUS: Connected";
+        await sendText("STATUS");
+        return true;
+      } catch (error) {
+        characteristic = null;
+        bleServer = null;
+        document.getElementById("status").textContent = "ERROR: Reconnect failed";
+        return false;
+      }
+    }
+
+    async function sendText(text) {
+      const ready = await reconnectIfNeeded();
+      if (!ready || !characteristic) return false;
+
+      const encoder = new TextEncoder();
+      await characteristic.writeValue(encoder.encode(text));
+      
+      // ★ここを追加！ 送信が成功したら画面のステータス欄に「TX: 送信文字」を表示する
+      document.getElementById("status").textContent = "TX: " + text;
+      
+      return true;
+    }
+
+    // ==================================================
+    // リレー操作 (Wi-Fi版のバグ調整ロジックを統合)
+    // ==================================================
+    async function pressRelay(event) {
+      event.preventDefault();
+
+      if (currentMode === "DIRECT") {
+        relayBtn.classList.add("active");
+      } 
+      else if (currentMode === "LATCH") {
+        latchRelayOn = !latchRelayOn;
+        relayBtn.classList.toggle("active", latchRelayOn);
+      } 
+      else if (currentMode === "TIMER") {
+        relayBtn.classList.add("active");
+
+        if (timerActiveTimeout !== null) {
+          clearTimeout(timerActiveTimeout);
+        }
+
+        const seconds = Number(timerInput.value);
+        timerActiveTimeout = setTimeout(() => {
+          relayBtn.classList.remove("active");
+          timerActiveTimeout = null;
+        }, seconds * 1000);
+      }
+
+      await sendText("PRESS");
+    }
+
+    async function releaseRelay(event) {
+      event.preventDefault();
+
+      if (currentMode === "DIRECT") {
+        relayBtn.classList.remove("active");
+      }
+
+      await sendText("RELEASE");
+    }
+
+    relayBtn.addEventListener("pointerdown", pressRelay);
+    relayBtn.addEventListener("pointerup", releaseRelay);
+    relayBtn.addEventListener("pointercancel", releaseRelay);
+    relayBtn.addEventListener("pointerleave", releaseRelay);
+
+    // ==================================================
+    // モード変更 (タイマーカウント中の切り替えバグ対応)
+    // ==================================================
+    async function sendMode(mode) {
+      updateModeDisplay(mode);
+
+      // モード切り替え時は即座にUI上のリレーアクティブ状態をリセットする（Wi-Fi版の挙動）
+      relayBtn.classList.remove("active");
+      latchRelayOn = false;
+
+      if (timerActiveTimeout !== null) {
+        clearTimeout(timerActiveTimeout);
+        timerActiveTimeout = null;
+      }
+
+      document.getElementById("status").textContent = "STATUS: Mode " + mode;
+
+      await sendText("MODE:" + mode);
+
+      setTimeout(() => {
+        sendText("STATUS");
+      }, 300);
+    }
+
+    async function sendTimerTime() {
+      const seconds = Number(timerInput.value);
+
+      if (!seconds || seconds < 1) {
+        alert("1秒以上を入力してください");
+        return;
+      }
+
+      timerEditing = true;
+      document.getElementById("status").textContent = "STATUS: Timer " + seconds + " sec";
+
+      await sendText("TIME:" + seconds);
+
+      timerEditing = false;
+
+      setTimeout(() => {
+        sendText("STATUS");
+      }, 300);
+    }
+
+    async function sendWIFI() {
+      const wifiBtn = document.getElementById("wifiBtn");
+
+      if (!wifiConfirm) {
+        wifiConfirm = true;
+        wifiBtn.innerHTML = "Wi-Fiモードへ切替<br><span style='color:#ff4d4d;font-size:11px;'>本当に切替えますか？</span>";
+
+        setTimeout(() => {
+          wifiConfirm = false;
+          wifiBtn.textContent = "Wi-Fiへ戻す";
+        }, 4000);
+        return;
+      }
+
+      wifiConfirm = false;
+      const ok = await sendText("WIFI");
+
+      if (ok) {
+        wifiBtn.textContent = "切替中...";
+        document.getElementById("status").textContent = "STATUS: Switching to Wi-Fi...";
+      }
+    }
+
+    // 初期表示設定
+    updateModeDisplay("DIRECT");
+  </script>
+</body>
+</html>
