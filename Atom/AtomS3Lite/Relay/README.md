@@ -6,7 +6,7 @@
 >
 > リモコンで使用するには、同じリポジトリ内の
 >
-> `M5StickS3 / Relay / M5StickS3_Relay_Remote.ino`
+> `M5Stick / M5StickS3 / Relay / M5StickS3_Relay_Remote.ino`
 >
 > をM5StickS3へ書き込んで組み合わせて使用してください。
 ## 使用したもの
