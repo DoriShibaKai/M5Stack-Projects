@@ -45,7 +45,7 @@
 
 ### タイマー時間変更
 
-- M5StickS3リモコン
+- M5StickS3リモコン（KEY2長押し）
 - Wi-Fi
 - BLE
 
