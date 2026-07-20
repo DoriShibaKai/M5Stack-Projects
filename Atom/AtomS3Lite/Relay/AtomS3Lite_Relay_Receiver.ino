@@ -22,7 +22,7 @@ const unsigned long PAIR_WAIT_MS = 15000;
 // ==================================================
 
 String apSsid;
-const char* AP_PASS = "12345678";
+const char* AP_PASS = "00000000"; // パスワードは変えてください
 
 WebServer server(80);
 
