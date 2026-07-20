@@ -1,4 +1,4 @@
-# ATOMS3R Relay 入力スイッチ
+# M5Atom-Projects
 
 M5Stack ATOMS3RとM5Stackリレーユニットを使用し、複数の入力方法からリレーを操作できる入力スイッチです。
 
